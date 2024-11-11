@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import os
+import pdb
 
 # We will be porting weights on CPU.
 # This is only necessary if you don't have enough GPU memory. In my
@@ -48,6 +49,8 @@ def port_weights_from_torch(torch_weights, eqx_model):
                 raise ValueError(f"Unsupported path type {type(path_elem)}")
 
         path_pieces = ".".join(path_pieces)
+
+        # pdb.set_trace()
 
         if "weight" in path_pieces:
             weight = torch_weights[path_pieces]

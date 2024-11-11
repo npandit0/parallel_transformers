@@ -422,7 +422,7 @@ def main(model_files_path="../model_files/"):
     model_files_path = Path(model_files_path)
 
     # 1. Load torch state dict
-    state_dict = load_torch_state_dict(model_files_path / "consolidated.00.pth")
+    state_dict = load_torch_state_dict(model_files_path / "consolidated.00.pth") # these are the weights
 
     # 2. Load arguments required for building the model
     with open(model_files_path / "params.json", "r") as f:

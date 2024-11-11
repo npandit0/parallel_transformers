@@ -1,10 +1,13 @@
 from typing import List
+# sentencepeice is a library
 from sentencepiece import SentencePieceProcessor
+import pdb
 
 
 class MistralTokenizer:
     def __init__(self, model_path: str):
-        self._model = SentencePieceProcessor(model_file=model_path)
+        # pdb.set_trace()
+        self._model = SentencePieceProcessor(model_file=str(model_path)) # cahnge to string, versioning problem?
 
     @property
     def eos_id(self) -> int:
