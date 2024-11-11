@@ -1,3 +1,6 @@
+We are building off this pre-trained transformer, with the goal of parallelizing the applicaiton of the transformer layer using fixed point iterations.
+
+
 # Mistral-7B reference implementation JAX and Equinox
 
 This repository contains a port of the original [Mistral-7B model](https://github.com/mistralai/mistral-src/tree/main?tab=readme-ov-file) in JAX and Equinox. The model here isn't pretrained or fine-tuned. The weights are ported from torch to jax, provided on an "as is" basis, without warranties or conditions of any kind.
