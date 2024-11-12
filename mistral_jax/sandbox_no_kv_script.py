@@ -20,14 +20,13 @@ from sentencepiece import SentencePieceProcessor
 
 import pdb
 
+import argparse
+
 # Set device to CPU for torch
 device  = torch.device("cpu")
 
 # Load the model dict, and check if any GPU is used
 # state_dict = torch.load("mistral-7B-v0.1/consolidated.00.pth")
-state_dict = torch.load(
-    "/Users/xaviergonzalez/Desktop/xavier_folders/stanford/cs229s/mistral_jax/model_files/consolidated.00.pth"
-)
 
 # Tokenizer class
 class Tokenizer:
@@ -47,7 +46,7 @@ class Tokenizer:
 
     def decode(self, t: List[int]) -> str:
         return self._model.decode(t)
-    
+
 def precompute_frequencies(dim, max_pos, theta=10000.0):
     inv_freq = 1.0 / (
         theta ** (jnp.arange(0, dim, 2, dtype=jnp.float32)[: (dim // 2)] / dim)
@@ -101,7 +100,7 @@ class RMSNorm(eqx.Module):
     def __call__(self, x):
         output = self._norm(x.astype(jnp.float32)).astype(x.dtype)
         return output * self.weight
-    
+
 class FeedForward(eqx.Module):
     w1: eqx.nn.Linear
     w2: eqx.nn.Linear
@@ -118,7 +117,7 @@ class FeedForward(eqx.Module):
     def __call__(self, x):
         h = jax.nn.silu(self.w1(x).astype(jnp.float32)).astype(x.dtype)
         return self.w2(h * self.w3(x))
-    
+
 class Attention(eqx.Module):
     dim: int
     n_heads: int
@@ -232,7 +231,7 @@ class Attention(eqx.Module):
         output = self.compute_scores_and_output(xq, key, value, mask, seqlen)
         # return output, cache_k, cache_v
         return output
-    
+
 class TransformerBlock(eqx.Module):
     dim: int
     n_heads: int
@@ -514,16 +513,20 @@ def port_weights_from_torch(torch_weights, eqx_model):
     return jax.tree_util.tree_map_with_path(load_weights, eqx_model)
 
 
-
-
-def main():
-    with open(
-    "/Users/xaviergonzalez/Desktop/xavier_folders/stanford/cs229s/mistral_jax/model_files/proto_params.json",
-    "r",
-) as f:
-    # with open('./mistral-7B-v0.1/params.json', 'r') as f:
+def main(params_file, load_weights):
+    """
+    Args:
+        params_file: str, which .json to load the dimensions of the models
+        load_weights: bool, should we load in the weights?
+    """
+    with open(params_file, "r") as f:
         args = ModelArgs(**json.loads(f.read()))
     model = Transformer(args, key=jax.random.PRNGKey(1), dtype=jnp.bfloat16) # sets architecutre
+    if load_weights:
+        state_dict = torch.load(
+        "/Users/xaviergonzalez/Desktop/xavier_folders/stanford/cs229s/mistral_jax/model_files/consolidated.00.pth"
+     )
+        model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
     cos_freq, sin_freq = precompute_frequencies(args.head_dim, 128000)
     vmapped = jax.vmap(partial(model.parallel_call, num_iters=15), in_axes=(0, None, None, None, None)) # vmapped is the name of the model
     fake_pos = jnp.array([0, 1, 2, 3, 4], dtype=jnp.int32)
@@ -535,4 +538,14 @@ def main():
     print(logits.shape)
 
 if __name__=='__main__':
-    main()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--proto", action="store_true", help="Use the proto model")
+    parser.add_argument("--load_weights", action="store_true", help="laod in weights")
+    args = parser.parse_args()
+    if args.proto:
+        params_file = "/Users/xaviergonzalez/Desktop/xavier_folders/stanford/cs229s/mistral_jax/model_files/proto_params.json"
+    else:
+        params_file = "/Users/xaviergonzalez/Desktop/xavier_folders/stanford/cs229s/mistral_jax/model_files/params.json"
+
+    main(params_file, args.load_weights)
