@@ -8,3 +8,4 @@ ruff==0.2.2
 sentencepiece==0.1.99
 typeguard==2.13.3
 torch
+matplotlib
