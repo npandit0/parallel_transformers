@@ -583,11 +583,16 @@ def save_to_pickle(data, filename):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations")
+    parser.add_argument("--proto", action="store_true", help="use prototype parameters")
+    parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
     args = parser.parse_args()
+
+    if args.proto:
+        args.load_weights = False
+        args.num_iters = 2
 
     wandb.init(project="parallel_transformer")
 
