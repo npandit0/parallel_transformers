@@ -588,13 +588,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
+    parser.add_argument("--xavier", action="store_true", help="wandb login for xavier")
     args = parser.parse_args()
 
     if args.proto:
         args.load_weights = False
         args.num_iters = 2
 
-    wandb.init(project="parallel_transformer")
+    if args.xavier:
+        wandb.init(project="parallel_transformer", entity="xavier_gonzalez")
+    else:
+        wandb.init(project="parallel_transformer")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
