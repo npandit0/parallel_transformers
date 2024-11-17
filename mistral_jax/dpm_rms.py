@@ -1,12 +1,6 @@
 """
-deer_prototype_mistral.py
-this script sets up and runs a forward pass through the mistral 7b architecture
-it's not that fast (we still have questions about whether jtu is parallelizing), and because we haven't found a nice solution for diagonal derivatives, we are very much limited by memory
-However, as long as we use small T (sequence length) and batch size B, we can actually get this to run
-
-TODOs:
-* can we handle larger batch sizes and sequence lengths? what about on hardware?
-* how is our accuracy? how can we get to bonafide exact recovery? and so clear the way to work on systems
+dpm_rms.py
+modifies the architecture so that every state is normalized by the root mean square of the state
 """
 
 import torch
@@ -296,11 +290,12 @@ class TransformerBlock(eqx.Module):
 
     # def __call__(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
     def __call__(self, x, cos_freq, sin_freq, positions, mask):
-        normed_x = jax.vmap(self.attention_norm)(x)
-        r = self.attention(normed_x, cos_freq, sin_freq, positions, mask)
+        # normed_x = jax.vmap(self.attention_norm)(x)
+        r = self.attention(x, cos_freq, sin_freq, positions, mask)
         h = x + r
         r = jax.vmap(self.feed_forward)(jax.vmap(self.ffn_norm)(h))
         out = h + r
+        out = jax.vmap(self.attention_norm)(out) # now every intermediate state is normalized
         return out
 
 
@@ -375,6 +370,7 @@ class Transformer(eqx.Module):
             mask = None
 
         all_states = []
+        h = self.compute_norm(h)
         for i, layer in enumerate(self.layers):
             # h has shape (len(positions), dim)
             # cache_ki has shape (sliding_window_len, head_dim, n_kv_heads)
@@ -470,7 +466,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
         A_j, b_j = q_j
         return A_j @ A_i, A_j @ b_i + b_j
     
-    def rms_normalize(arr, eps):
+    def rms_normalize(arr, eps=1e-5):
         """
         Apply rms normalization to an array
         """
@@ -522,6 +518,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
         )  # parallel operation
         # new_states = jnp.nan_to_num(new_states)  # zero out nans, (num_layers, T*D)
         new_states = jnp.reshape(new_states, (num_layers, T, D))  # (num_layers, T, D)
+        new_states = jax.vmap(rms_normalize)(new_states)  # (num_layers, T, D) # projecting the fixed point iteration back down.
         return list(new_states), new_states
 
     print("starting deer outer loop")
