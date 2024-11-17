@@ -576,22 +576,24 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations")
+    parser.add_argument("--load_weights", type=bool, default=True, help="whether to pre-load model weights")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    state_dict = torch.load(
-        "../model_files/consolidated.00.pth"
-    )
 
     with open("../model_files/params.json", "r") as f:
-        args = ModelArgs(**json.loads(f.read()))
+        model_args = ModelArgs(**json.loads(f.read()))
 
     model = Transformer(
-        args, key=jax.random.PRNGKey(1), dtype=jnp.bfloat16
+        model_args, key=jax.random.PRNGKey(1), dtype=jnp.bfloat16
     )  # sets architecutre
-    model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
-    cos_freq, sin_freq = precompute_frequencies(args.head_dim, 128000)
+    if(args.load_weights):
+        state_dict = torch.load(
+            "../model_files/consolidated.00.pth"
+        )
+        model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
+    cos_freq, sin_freq = precompute_frequencies(model_args.head_dim, 128000)
     vmap_par = jax.vmap(
         partial(model.parallel_call, num_iters=args.num_iters),
         in_axes=(0, None, None, None, None),
