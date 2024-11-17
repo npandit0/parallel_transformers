@@ -584,7 +584,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations")
-    parser.add_argument("--load_weights", type=bool, default=True, help="whether to pre-load model weights")
+    parser.add_argument(
+        "--load_weights", action="store_true", help="Pre-load model weights"
+    )
     args = parser.parse_args()
 
     wandb.init(project="parallel_transformer")
@@ -592,7 +594,12 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    with open("../model_files/params.json", "r") as f:
+    if args.load_weights:
+        param_file = "../model_files/params.json"
+    else:
+        param_file = "../model_files/proto_params.json"
+
+    with open(param_file, "r") as f:
         model_args = ModelArgs(**json.loads(f.read()))
 
     model = Transformer(
