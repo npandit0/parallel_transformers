@@ -40,7 +40,7 @@ import matplotlib.colors as mcolors
 import argparse
 import wandb
 import pickle
-
+import time
 
 class Tokenizer:
     def __init__(self, model_path: str):
@@ -537,7 +537,10 @@ def deer(x, layers, states_guess, num_iters, k=1):
         print(f"iteration {i}")
         print("-----------------")
         print()
+        t1 = time.time()
         states_guess, iter_hist_add = step(states_guess, None)
+        t2 = time.time()
+        wandb.log({"time_per_iter": t2 - t1})
         iter_hist.append(iter_hist_add)
 
     # return states_guess
