@@ -24,6 +24,7 @@ import torch
 import jax
 import equinox as eqx
 import jax.numpy as jnp
+import jax.random as jr
 import jax.tree_util as jtu
 
 from functools import partial
@@ -424,7 +425,9 @@ class Transformer(eqx.Module):
             self.layers, cos_freq, sin_freq, positions, mask
         )
         states_guess = [
-            jnp.ones((T, D)) for _ in range(num_layers)
+            jr.normal(jr.PRNGKey(i), (T, D))
+            / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D)) ** 2))
+            for i in range(num_layers)
         ]  # make sure to stay near rms norm equal to 1 TODO: initialization is really important!
         # states_guess = [jnp.zeros((T, D)) for _ in range(num_layers)] # never do this when using rms norm, grads will explode
         # calls out to deer
