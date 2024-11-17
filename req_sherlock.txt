@@ -1,0 +1,10 @@
+equinox==0.11.4
+jaxtyping==0.2.25
+ml-dtypes==0.3.2
+numpy==1.26.4
+ruff==0.2.2
+sentencepiece==0.1.99
+typeguard==2.13.3
+torch
+matplotlib
+wandb
