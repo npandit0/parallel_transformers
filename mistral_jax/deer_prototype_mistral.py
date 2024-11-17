@@ -35,8 +35,11 @@ from sentencepiece import SentencePieceProcessor
 
 import pdb
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 import argparse
+import wandb
+import pickle
 
 
 class Tokenizer:
@@ -572,12 +575,19 @@ def port_weights_from_torch(torch_weights, eqx_model):
     return jax.tree_util.tree_map_with_path(load_weights, eqx_model)
 
 
+def save_to_pickle(data, filename):
+    with open(filename, "wb") as f:
+        pickle.dump(data, f)
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations")
     parser.add_argument("--load_weights", type=bool, default=True, help="whether to pre-load model weights")
     args = parser.parse_args()
+
+    wandb.init(project="parallel_transformer")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -612,3 +622,42 @@ if __name__ == "__main__":
     hist_parr = vmap_par(
         fake_inp, cos_freq[fake_pos], sin_freq[fake_pos], fake_pos, fake_mask
     )
+
+    results_dict = {
+        "hist_seq": hist_seq,
+        "hist_parr": hist_parr,
+    }
+    file_name = f"results_num_iters_{args.num_iters}"
+    artifact = wandb.Artifact(file_name, type="dataset")
+    save_to_pickle(results_dict, f"{file_name}.pkl")
+    artifact.add_file(f"{file_name}.pkl")
+    wandb.log_artifact(artifact)
+
+    # make plots
+    errors_per_iter_and_layer = jnp.mean(
+        jnp.abs((hist_parr[0] - hist_seq).squeeze()), axis=-1
+    )
+
+    # error plot
+    fig, ax = plt.subplots()
+    ax.plot(errors_per_iter_and_layer[-1])
+
+    # Add labels, log scale, and legend
+    ax.set_xlabel("layers")
+    ax.set_ylabel("mean error in activations")
+    ax.set_yscale("log")
+    ax.legend()
+    # log to wandb
+    wandb.log({"error_plot": wandb.Image(fig)})
+    plt.close(fig)
+
+    # heat map over all the iterations
+    fig, ax = plt.subplots()
+    # Plot the heatmap
+    im = ax.imshow(errors_per_iter_and_layer, cmap="hot", norm=mcolors.LogNorm(), interpolation="nearest")
+    # Add a colorbar
+    cbar = fig.colorbar(im, ax=ax)
+    wandb.log({"heatmap": wandb.Image(fig)})
+    plt.close(fig)
+
+    wandb.finish()
