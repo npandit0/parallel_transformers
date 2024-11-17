@@ -5,7 +5,7 @@ jaxtyping==0.2.25
 ml-dtypes==0.3.2
 numpy==1.26.4
 ruff==0.2.2
-sentencepiece==0.1.99
+sentencepiece==0.2.0 # upgraade from 0.1.99 to make work for python 3.12.1
 typeguard==2.13.3
 torch
 matplotlib
