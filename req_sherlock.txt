@@ -1,4 +1,4 @@
-equinox==0.11.4
+equinox
 jaxtyping==0.2.25
 ml-dtypes==0.3.2
 numpy==1.26.4
