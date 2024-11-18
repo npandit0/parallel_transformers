@@ -5,4 +5,5 @@
 #SBATCH --time=00:59:59
 #SBATCH --mail-type=ALL
 
+export JAX_PLATFORM_NAME=cpu
 $SCRATCH/parallel_transformers/venvs/mistral_jax/bin/python deer_prototype_mistral.py $@ --xavier
