@@ -593,6 +593,39 @@ def save_to_pickle(data, filename):
 
 if __name__ == "__main__":
 
+    import os
+    import logging
+
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Check if we're forcing CPU usage
+    force_cpu = os.environ.get('JAX_PLATFORM_NAME') == 'cpu' or os.environ.get('JAX_PLATFORMS') == 'cpu'
+
+    if force_cpu:
+        logging.info("Forcing CPU usage based on environment variables")
+        os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+        os.environ['JAX_PLATFORMS'] = 'cpu'
+
+    import jax
+    import jax.numpy as jnp
+
+    # Log the devices JAX can see
+    logging.info(f"JAX devices: {jax.devices()}")
+
+    if not force_cpu:
+        try:
+            # Try to create a GPU array
+            jax.device_put(jnp.zeros(1), jax.devices("gpu")[0])
+            logging.info("Successfully initialized GPU")
+        except RuntimeError as e:
+            logging.warning(f"Failed to initialize GPU: {e}")
+            logging.info("Falling back to CPU")
+            jax.config.update('jax_platform_name', 'cpu')
+
+    # Log the final platform being used
+    logging.info(f"JAX is using platform: {jax.default_backend()}")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--proto", action="store_true", help="use prototype parameters")
     parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
