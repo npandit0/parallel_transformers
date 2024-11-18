@@ -4,7 +4,7 @@
 #SBATCH --out=dpm_cpu_%j_%a.out
 #SBATCH --time=00:59:59
 #SBATCH --mail-type=ALL
-#SBATCH --mem=80G  # Allocate 32 GB of memory
+#SBATCH --mem=64G  # Allocate 32 GB of memory
 
 export JAX_PLATFORM_NAME=cpu
 $SCRATCH/parallel_transformers/venvs/mistral_jax/bin/python deer_prototype_mistral.py $@ --xavier
