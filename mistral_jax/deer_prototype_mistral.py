@@ -424,8 +424,8 @@ class Transformer(eqx.Module):
             self.layers, cos_freq, sin_freq, positions, mask
         )
         states_guess = [
-            jr.normal(jr.PRNGKey(i), (T, D))
-            / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D)) ** 2))
+            jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.bfloat16)
+            / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.bfloat16) ** 2))
             for i in range(num_layers)
         ]  # make sure to stay near rms norm equal to 1
         # states_guess = [jnp.zeros((T, D)) for _ in range(num_layers)] # never do this when using rms norm, grads will explode
@@ -684,8 +684,8 @@ if __name__ == "__main__":
     )
 
     results_dict = {
-        "hist_seq": hist_seq,
-        "hist_parr": hist_parr,
+        "hist_seq": hist_seq,    # (B, num_layers, T, D)
+        "hist_parr": hist_parr,  # (B, num_iters, num_layers, T, D) 
     }
     file_name = f"results_num_iters_{args.num_iters}"
     artifact = wandb.Artifact(file_name, type="dataset")
@@ -695,7 +695,7 @@ if __name__ == "__main__":
 
     # make plots
     errors_per_iter_and_layer = jnp.mean(
-        jnp.abs((hist_parr[0] - hist_seq).squeeze()), axis=-1
+        jnp.abs((hist_parr - hist_seq[:, jnp.newaxis])), axis=(0,-2,-1)
     )
 
     # error plot
