@@ -108,7 +108,7 @@ class RMSNorm(eqx.Module):
     eps: float
     weight: Float[Array, "*shape"]
 
-    def __init__(self, dim, eps, dtype=jnp.bfloat16):
+    def __init__(self, dim, eps, dtype=jnp.float32):
         dtype = default_floating_dtype if dtype is None else dtype
         self.eps = eps
         self.weight = jnp.ones(shape=dim, dtype=dtype)
@@ -129,7 +129,7 @@ class FeedForward(eqx.Module):
     w2: eqx.nn.Linear
     w3: eqx.nn.Linear
 
-    def __init__(self, args, key, dtype=jnp.bfloat16):
+    def __init__(self, args, key, dtype=jnp.float32):
         dtype = default_floating_dtype if dtype is None else dtype
         key1, key2, key3 = jax.random.split(key, 3)
 
@@ -161,7 +161,7 @@ class Attention(eqx.Module):
     wv: eqx.nn.Linear
     wo: eqx.nn.Linear
 
-    def __init__(self, args, key, dtype=jnp.bfloat16):
+    def __init__(self, args, key, dtype=jnp.float32):
         dtype = default_floating_dtype if dtype is None else dtype
         key1, key2, key3, key4 = jax.random.split(key, 4)
 
@@ -283,7 +283,7 @@ class TransformerBlock(eqx.Module):
     feed_forward: FeedForward
     ffn_norm: RMSNorm
 
-    def __init__(self, args, key, dtype=jnp.bfloat16):
+    def __init__(self, args, key, dtype=jnp.float32):
         key1, key2 = jax.random.split(key, 2)
         self.n_heads = args.n_heads
         self.dim = args.dim
@@ -313,7 +313,7 @@ class Transformer(eqx.Module):
     n_layers: int
     sliding_window: int
 
-    def __init__(self, args, key, dtype=jnp.bfloat16):
+    def __init__(self, args, key, dtype=jnp.float32):
         self.vocab_size = args.vocab_size
         self.n_layers = args.n_layers
         self.sliding_window = args.sliding_window
@@ -338,7 +338,7 @@ class Transformer(eqx.Module):
 
     @eqx.filter_jit
     def compute_mask(self, seqlen):
-        t = jnp.full((seqlen, seqlen), dtype=jnp.bfloat16, fill_value=1)
+        t = jnp.full((seqlen, seqlen), dtype=jnp.float32, fill_value=1)
         mask = jnp.tril(t, k=0)
         # make the mask banded to account for sliding window
         mask = jnp.triu(mask, k=-self.sliding_window)
@@ -424,8 +424,8 @@ class Transformer(eqx.Module):
             self.layers, cos_freq, sin_freq, positions, mask
         )
         states_guess = [
-            jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.bfloat16)
-            / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.bfloat16) ** 2))
+            jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.float32)
+            / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.float32) ** 2))
             for i in range(num_layers)
         ]  # make sure to stay near rms norm equal to 1
         # states_guess = [jnp.zeros((T, D)) for _ in range(num_layers)] # never do this when using rms norm, grads will explode
@@ -539,6 +539,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
         print("-----------------")
         print()
         t1 = time.time()
+        # states_guess, iter_hist_add = step(states_guess, 1)
         states_guess, iter_hist_add = step(states_guess, i+1)
         t2 = time.time()
         wandb.log({"time_per_iter": t2 - t1})
@@ -576,7 +577,7 @@ def port_weights_from_torch(torch_weights, eqx_model):
 
         if "weight" in path_pieces:
             weight = torch_weights[path_pieces]
-            weight = jnp.asarray(weight.float().numpy(), dtype=jnp.bfloat16)
+            weight = jnp.asarray(weight.float().numpy(), dtype=jnp.float32)
             assert weight.shape == leaf.shape
             assert weight.dtype == leaf.dtype
             return weight
@@ -657,7 +658,7 @@ if __name__ == "__main__":
         model_args = ModelArgs(**json.loads(f.read()))
 
     model = Transformer(
-        model_args, key=jax.random.PRNGKey(1), dtype=jnp.bfloat16
+        model_args, key=jax.random.PRNGKey(1), dtype=jnp.float32
     )  # sets architecutre
     if(args.load_weights):
         state_dict = torch.load(
