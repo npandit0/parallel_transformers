@@ -469,19 +469,19 @@ def deer(x, layers, states_guess, num_iters, k=1):
         A_i, b_i = q_i
         A_j, b_j = q_j
         return A_j @ A_i, A_j @ b_i + b_j
-    
+
     def rms_normalize(arr, eps):
         """
         Apply rms normalization to an array
         """
         return arr * jax.lax.rsqrt(jnp.mean(arr ** 2) + eps)
 
-    def step(states, args):
+    def step(states, iter_num):
         """
         This step is a single deer iteration (will eventually be sequential scanned)
         Args:
           states: list of length num_layers of (T, D) shaped arrays
-          args: None
+          args: this needs to be a range from 1 to num_iters
         """
         states = [x] + states[:-1]  # length num_layers
         print(f"states shape is {states[0].shape}")
@@ -495,7 +495,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
             )  # this line seems to be the bottleneck, but that's odd bc we'd expect someone to take this grads during backprop
         )  # (num_layers, T, D, T, D) tensors
         print(f"As shape is {As.shape}")
-        As = As.at[0].set(jnp.zeros((T, D, T, D)))
+        As = As.at[0:iter_num].set(jnp.zeros((iter_num, T, D, T, D)))
         # pdb.set_trace()
         # need to make the first A equal to zero
         states = jnp.array(states)  # (num_layers, T,D)
@@ -531,6 +531,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
     # )  # state_iters will show all the intermediate traces
 
     iter_hist = []
+    # iter_nums = jnp.arange(1, num_iters+1)
     for i in range(num_iters):
         print()
         print("-----------------")
@@ -538,7 +539,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
         print("-----------------")
         print()
         t1 = time.time()
-        states_guess, iter_hist_add = step(states_guess, None)
+        states_guess, iter_hist_add = step(states_guess, i+1)
         t2 = time.time()
         wandb.log({"time_per_iter": t2 - t1})
         iter_hist.append(iter_hist_add)
@@ -637,7 +638,7 @@ if __name__ == "__main__":
 
     if args.proto:
         args.load_weights = False
-        args.num_iters = 2
+        args.num_iters = 10
 
     if args.xavier:
         wandb.init(project="parallel_transformer", entity="xavier_gonzalez")
@@ -714,7 +715,7 @@ if __name__ == "__main__":
     # heat map over all the iterations
     fig, ax = plt.subplots()
     # Plot the heatmap
-    im = ax.imshow(errors_per_iter_and_layer, cmap="hot", norm=mcolors.LogNorm(), interpolation="nearest")
+    im = ax.imshow(jnp.array(errors_per_iter_and_layer, dtype=jnp.float32), cmap="hot", norm=mcolors.LogNorm(), interpolation="nearest")
     # Add a colorbar
     cbar = fig.colorbar(im, ax=ax)
     wandb.log({"heatmap": wandb.Image(fig)})
