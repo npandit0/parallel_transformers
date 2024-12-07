@@ -248,6 +248,7 @@ class Attention(eqx.Module):
             # v_updates = cache_v + xv * one_hot_indices
             # cache_k = jnp.where(cache_k, cache_k, k_updates)
             # cache_v = jnp.where(cache_v, cache_v, v_updates)
+            # pdb.set_trace()
             cache_k = cache_k + xk * one_hot_indices
             cache_k = cache_v + xv * one_hot_indices
 
@@ -404,7 +405,7 @@ class Transformer(eqx.Module):
                 sin_freq=sin_freq,
                 positions=positions,
                 mask=mask,
-                cache_k=cache_k[0,index],# Need to index in the depth dimension
+                cache_k=cache_k[0,index], # Need to index in the depth dimension
                 cache_v=cache_v[0,index]
             )
 
@@ -439,12 +440,12 @@ class Transformer(eqx.Module):
         # calls out to deer
         all_states = deer(
             h0, partialed_layers, states_guess, num_iters
-        )  # (batch_size, num_iters, num_layers, T, D)
+        )  # (num_iters, num_layers, T, D)
 
         # loop through all_states to the kv cache
         for i, layer in enumerate(self.layers):
             _, cache_ki, cache_vi = layer(
-                all_states[:, -1, i], cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
+                all_states[-1, i], cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
             )  
             cache_k, cache_v = self.update_cache_values(
                 i, cache_k, cache_v, cache_ki, cache_vi
@@ -605,10 +606,10 @@ def save_to_pickle(data, filename):
         pickle.dump(data, f)
 
 
-def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True):
+def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True, num_iters=2):
     cos_freq, sin_freq = precompute_frequencies(head_dim, 128000)
     parallel_model = jax.vmap(
-            model.parallel_call, in_axes=(0, None, None, None, None, 0, 0)
+            model.parallel_call, in_axes=(0, None, None, None, None, 0, 0, None)
         ) 
     sequential_model = jax.vmap(
             model, in_axes=(0, None, None, None, None, 0, 0)
@@ -667,6 +668,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
                 None,
                 cache_k,
                 cache_v,
+                num_iters
             )
         else:
             logits, cache_k, cache_v, _ = sequential_model(
@@ -730,6 +732,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
+    parser.add_argument(
+        "--parallel", action="store_true", help="generate in parallel"
+    )
     parser.add_argument("--xavier", action="store_true", help="wandb login for xavier")
     args = parser.parse_args()
 
@@ -765,8 +770,6 @@ if __name__ == "__main__":
         )
         model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
 
-
     tokenizer = Tokenizer("../model_files/tokenizer.model")
-    
 
-    res = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=5)
+    res = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=5, parallel=args.parallel, num_iters=args.num_iters)

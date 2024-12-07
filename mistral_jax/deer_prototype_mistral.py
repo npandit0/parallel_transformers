@@ -389,6 +389,8 @@ class Transformer(eqx.Module):
     def partial_layers(self, layers, cos_freq, sin_freq, positions, mask):
         """
         Ideally we could use jtu instead...
+
+        Currently retruns a list
         """
 
         def partial_layer(layer):
@@ -420,6 +422,7 @@ class Transformer(eqx.Module):
         # parallel logic
         num_layers = len(self.layers)
         # pdb.set_trace()
+        # we want to add the kv cache for each layer
         partialed_layers = self.partial_layers(
             self.layers, cos_freq, sin_freq, positions, mask
         )
@@ -446,6 +449,9 @@ class Transformer(eqx.Module):
 def deer(x, layers, states_guess, num_iters, k=1):
     """
     runs deer (fiddly logic in the rearrange)
+
+    Notes:
+    * we do need to modify the fs to take inputs
 
     Args:
       x: (T, d) initial inputs to transformer stack
