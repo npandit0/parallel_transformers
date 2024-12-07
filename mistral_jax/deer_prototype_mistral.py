@@ -674,8 +674,15 @@ if __name__ == "__main__":
         model,
         in_axes=(0, None, None, None, None),
     )
-    fake_pos = jnp.array([0], dtype=jnp.int32)
-    fake_inp = jnp.asarray([[1]], dtype=jnp.int32)
+
+    # # hardcoded easy example (only a start token)
+    # fake_pos = jnp.array([0], dtype=jnp.int32)
+    # fake_inp = jnp.asarray([[1]], dtype=jnp.int32)
+
+    # hardcoded easy example ("maple'")
+    fake_pos = jnp.array([0,1,2], dtype=jnp.int32)
+    fake_inp = jnp.asarray([[1, 22204, 9011]], dtype=jnp.int32)
+
     fake_mask = None
 
     hist_seq = vmap_seq(
