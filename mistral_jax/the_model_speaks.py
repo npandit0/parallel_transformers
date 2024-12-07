@@ -1,12 +1,7 @@
 """
-deer_prototype_mistral.py
-this script sets up and runs a forward pass through the mistral 7b architecture
-it's not that fast (we still have questions about whether jtu is parallelizing), and because we haven't found a nice solution for diagonal derivatives, we are very much limited by memory
-However, as long as we use small T (sequence length) and batch size B, we can actually get this to run
+the_model_speaks.py
 
-TODOs:
-* can we handle larger batch sizes and sequence lengths? what about on hardware?
-* how is our accuracy? how can we get to bonafide exact recovery? and so clear the way to work on systems
+Using the kv cache in conjunction with deer to get around memory bottlenek in computing the Jacobians
 """
 
 import torch
@@ -156,14 +151,13 @@ class Attention(eqx.Module):
     kv_repeats: int
     sliding_window: int
     scale: float
-    wq: eqx.nn.Linear
-    wk: eqx.nn.Linear
-    wv: eqx.nn.Linear
+    split_sizes: Tuple
+    wqkv: eqx.nn.Linear
     wo: eqx.nn.Linear
 
-    def __init__(self, args, key, dtype=jnp.float32):
-        dtype = default_floating_dtype if dtype is None else dtype
-        key1, key2, key3, key4 = jax.random.split(key, 4)
+    def __init__(self, args, key, dtype=jnp.bfloat16):
+        dtype = default_floating_dtype() if dtype is None else dtype
+        key1, key2 = jax.random.split(key, 2)
 
         self.n_heads = args.n_heads
         self.head_dim = args.head_dim
@@ -171,77 +165,33 @@ class Attention(eqx.Module):
         self.dim = args.dim
         self.kv_repeats = self.n_heads // self.n_kv_heads
         self.sliding_window = args.sliding_window
-
         self.scale = args.head_dim**-0.5
-
-        self.wq = eqx.nn.Linear(
-            args.dim,
+        total_head_dim = (args.n_heads + 2 * args.n_kv_heads) * args.head_dim
+        self.split_sizes = (
             args.n_heads * args.head_dim,
-            use_bias=False,
-            key=key1,
-            dtype=dtype,
+            (args.n_heads * args.head_dim) + (args.n_kv_heads * args.head_dim),
         )
-        self.wk = eqx.nn.Linear(
-            args.dim,
-            args.n_kv_heads * args.head_dim,
-            use_bias=False,
-            key=key2,
-            dtype=dtype,
-        )
-        self.wv = eqx.nn.Linear(
-            args.dim,
-            args.n_kv_heads * args.head_dim,
-            use_bias=False,
-            key=key3,
-            dtype=dtype,
+
+        self.wqkv = eqx.nn.Linear(
+            args.dim, total_head_dim, use_bias=False, key=key1, dtype=dtype
         )
         self.wo = eqx.nn.Linear(
             args.n_heads * args.head_dim,
             args.dim,
             use_bias=False,
-            key=key4,
+            key=key2,
             dtype=dtype,
         )
 
-    @partial(jax.jit, static_argnums=(2, 3))
-    def get_cache_slice(self, x, pos, kv_repeats):
-        x_slice = x.at[:pos, :, :].get()
-        x_slice = jnp.repeat(x_slice, kv_repeats, axis=1)
-        return x_slice
-
-    @eqx.filter_jit
-    def compute_qkv(self, x):
-        seqlen, _ = x.shape
-
-        xq = jax.vmap(self.wq)(x)
-        xk = jax.vmap(self.wk)(x)
-        xv = jax.vmap(self.wv)(x)
-
-        xq = jnp.reshape(xq, (seqlen, self.n_heads, self.head_dim))
-        xk = jnp.reshape(xk, (seqlen, self.n_kv_heads, self.head_dim))
-        xv = jnp.reshape(xv, (seqlen, self.n_kv_heads, self.head_dim))
-        return xq, xk, xv
-
-    @jax.jit
-    def update_cache_values(self, xk, xv, cache_k, cache_v, positions):
-        cache_k = cache_k.at[positions, ...].set(xk[positions, ...])
-        cache_v = cache_v.at[positions, ...].set(xv[positions, ...])
-        return cache_k, cache_v
-
-    @eqx.filter_jit
-    def prefill(self, xk, xv):
-        key = jnp.repeat(xk, self.kv_repeats, axis=1)
-        value = jnp.repeat(xv, self.kv_repeats, axis=1)
-        return key, value
-
-    @eqx.filter_jit
-    def compute_scores_and_output(self, xq, key, value, mask, seqlen):
+    def compute_scores_and_output(self, xq, key, value, mask, seqlen, pos_mask):
         query = jnp.transpose(xq, (1, 0, 2))
         key = jnp.transpose(key, (1, 0, 2))
         value = jnp.transpose(value, (1, 0, 2))
 
         # # # scores : [n_heads, seqlen | 1, seqlen]
         scores = jnp.matmul(query, jnp.transpose(key, (0, 2, 1))) * self.scale
+        if pos_mask is not None:
+            scores = jnp.where(pos_mask, -jnp.inf, scores)
 
         if mask is not None:
             # Mask will of shape [seqlen, seqlen] but our scores
@@ -260,19 +210,69 @@ class Attention(eqx.Module):
         self, x, cos_freq, sin_freq, positions, mask=None, cache_k=None, cache_v=None
     ):
         # x shape: [seqlen, embed_dim]
-        seqlen, _ = x.shape
-        # 1. Calculate qkv
-        xq, xk, xv = self.compute_qkv(x)
+        seqlen = x.shape[0]
 
-        # 2. Calculate RoPE
-        xq = calculate_rope(xq, cos_freq, sin_freq, 0)
-        xk = calculate_rope(xk, cos_freq, sin_freq, 0)
+        xqkv = jax.vmap(self.wqkv)(x)
+        xq, xk, xv = jnp.split(xqkv, self.split_sizes, axis=-1)
 
-        key, value = self.prefill(xk, xv)
+        xq = jnp.reshape(xq, (seqlen, self.n_heads, self.head_dim))
+        xk = jnp.reshape(xk, (seqlen, self.n_kv_heads, self.head_dim))
+        xv = jnp.reshape(xv, (seqlen, self.n_kv_heads, self.head_dim))
 
-        # 5. Output
-        output = self.compute_scores_and_output(xq, key, value, mask, seqlen)
-        return output
+        xq = calculate_rope(xq, cos_freq, sin_freq)
+        xk = calculate_rope(xk, cos_freq, sin_freq)
+
+        if positions.shape[0] > 1:
+            # prefill
+            cache_k = cache_k.at[positions, :, :].set(xk[positions, :, :], mode="drop")
+            cache_v = cache_v.at[positions, :, :].set(xv[positions, :, :], mode="drop")
+
+            key = jnp.repeat(xk, self.kv_repeats, axis=1)
+            value = jnp.repeat(xv, self.kv_repeats, axis=1)
+            output = self.compute_scores_and_output(xq, key, value, mask, seqlen, None)
+        else:
+            # single-token generation
+            one_hot_indices = jax.nn.one_hot(
+                positions, self.sliding_window, dtype=cache_k.dtype
+            ).reshape(self.sliding_window, 1, 1)
+            # Ideally, we expect that you flush out the cache with the new prompt,
+            # and start over. Why flushing out the cache values are necessary?
+            # It ensures that we are not adding any values updated earlier with the
+            # new updates, meaning we are always replacing the value not updating it.
+            # For example, if prompt had a length of 6, and you want to generate 7th
+            # token, this ensures that we are not adding the old value of 7th token
+            # to the updated value as it would lead to wrong results.
+            # In case, you are not flushing the cache after every prompt, add the
+            # `jnp.where()` condition as shown below:
+            # k_updates = cache_k + xk * one_hot_indices
+            # v_updates = cache_v + xv * one_hot_indices
+            # cache_k = jnp.where(cache_k, cache_k, k_updates)
+            # cache_v = jnp.where(cache_v, cache_v, v_updates)
+            cache_k = cache_k + xk * one_hot_indices
+            cache_k = cache_v + xv * one_hot_indices
+
+            cur_pos = positions[-1] + 1
+            causal_mask = jnp.broadcast_to(
+                jnp.arange(self.sliding_window) >= cur_pos, (1, 1, self.sliding_window)
+            ).reshape(self.sliding_window, 1, 1)
+
+            key = jnp.repeat(
+                jnp.where(causal_mask, 0, cache_k), axis=1, repeats=self.kv_repeats
+            )
+            value = jnp.repeat(
+                jnp.where(causal_mask, 0, cache_v), axis=1, repeats=self.kv_repeats
+            )
+
+            output = self.compute_scores_and_output(
+                xq,
+                key,
+                value,
+                mask,
+                seqlen,
+                causal_mask.reshape((1, 1, self.sliding_window)),
+            )
+
+        return output, cache_k, cache_v
 
 
 class TransformerBlock(eqx.Module):
@@ -283,7 +283,7 @@ class TransformerBlock(eqx.Module):
     feed_forward: FeedForward
     ffn_norm: RMSNorm
 
-    def __init__(self, args, key, dtype=jnp.float32):
+    def __init__(self, args, key, dtype=jnp.bfloat16):
         key1, key2 = jax.random.split(key, 2)
         self.n_heads = args.n_heads
         self.dim = args.dim
@@ -294,14 +294,15 @@ class TransformerBlock(eqx.Module):
         self.feed_forward = FeedForward(args, key=key2, dtype=dtype)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, dtype=dtype)
 
-    # def __call__(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
-    def __call__(self, x, cos_freq, sin_freq, positions, mask):
+    def __call__(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         normed_x = jax.vmap(self.attention_norm)(x)
-        r = self.attention(normed_x, cos_freq, sin_freq, positions, mask)
+        r, cache_k, cache_v = self.attention(
+            normed_x, cos_freq, sin_freq, positions, mask, cache_k, cache_v
+        )
         h = x + r
         r = jax.vmap(self.feed_forward)(jax.vmap(self.ffn_norm)(h))
         out = h + r
-        return out
+        return out, cache_k, cache_v
 
 
 class Transformer(eqx.Module):
@@ -361,9 +362,9 @@ class Transformer(eqx.Module):
         cache_v = cache_v.at[idx, :, :, :].set(cache_v_updates)
         return cache_k, cache_v
 
-    def __call__(self, x, cos_freq, sin_freq, positions, mask):
+    def __call__(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         """
-        Edited to do prefilling instead of kv cache
+        The return signature is logits, cache_k, cache_v, list of intermediate activations (xs)
         """
         # x is of shape (seqlen, )
         h = self.compute_embeddings(x)
@@ -378,35 +379,43 @@ class Transformer(eqx.Module):
         for i, layer in enumerate(self.layers):
             # h has shape (len(positions), dim)
             # cache_ki has shape (sliding_window_len, head_dim, n_kv_heads)
-            h = layer(h, cos_freq, sin_freq, positions, mask)  # h has shape (T,D)
+            h, cache_ki, cache_vi = layer(
+                h, cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
+            )  # h has shape (T,D)
+            cache_k, cache_v = self.update_cache_values(
+                i, cache_k, cache_v, cache_ki, cache_vi
+            )
             all_states.append(h)
             # print(f"at layer {i}, the shape of the feature is {h.shape}")
 
-        # h = self.compute_norm(h)
-        # h = self.compute_output(h).astype(jnp.float32)
-        return jnp.array(all_states)
+        h = self.compute_norm(h)
+        h = self.compute_output(h).astype(jnp.float32)
+        return h, cache_k, cache_v, jnp.array(all_states)
 
-    def partial_layers(self, layers, cos_freq, sin_freq, positions, mask):
+    def partial_layers(self, layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         """
         Ideally we could use jtu instead...
         """
 
-        def partial_layer(layer):
+        def partial_layer(layer, index):
             return partial(
                 layer.__call__,
                 cos_freq=cos_freq,
                 sin_freq=sin_freq,
                 positions=positions,
                 mask=mask,
+                cache_k=cache_k[0,index],# Need to index in the depth dimension
+                cache_v=cache_v[0,index]
             )
 
         return [
-            partial_layer(layer) for layer in layers
+            lambda state : partial_layer(layer,i)(state)[0] for i,layer in enumerate(layers)
         ]  # really would prefer not to use list comprehension
 
-    def parallel_call(self, x, cos_freq, sin_freq, positions, mask, num_iters=7):
+    def parallel_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v, num_iters=7):
         """
         Should give the same output as call, but using fixed point iterations
+        x is a tensor of token indices (B,T)
         """
         h0 = self.compute_embeddings(x)
         T, D = h0.shape
@@ -419,28 +428,31 @@ class Transformer(eqx.Module):
 
         # parallel logic
         num_layers = len(self.layers)
-        # pdb.set_trace()
         partialed_layers = self.partial_layers(
-            self.layers, cos_freq, sin_freq, positions, mask
+            self.layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v
         )
         states_guess = [
             jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.float32)
             / jnp.sqrt(jnp.mean(jr.normal(jr.PRNGKey(i), (T, D), dtype=jnp.float32) ** 2))
             for i in range(num_layers)
         ]  # make sure to stay near rms norm equal to 1
-        # states_guess = [jnp.zeros((T, D)) for _ in range(num_layers)] # never do this when using rms norm, grads will explode
         # calls out to deer
         all_states = deer(
             h0, partialed_layers, states_guess, num_iters
         )  # (batch_size, num_iters, num_layers, T, D)
 
-        return jnp.array(all_states)
-        # h = all_states[-1][-1]
-        # pdb.set_trace()
-
-        # h = self.compute_norm(h)
-        # h = self.compute_output(h).astype(jnp.float32)
-        # return h
+        # loop through all_states to the kv cache
+        for i, layer in enumerate(self.layers):
+            _, cache_ki, cache_vi = layer(
+                all_states[:, -1, i], cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
+            )  
+            cache_k, cache_v = self.update_cache_values(
+                i, cache_k, cache_v, cache_ki, cache_vi
+            )  
+        h = all_states[-1][-1]
+        h = self.compute_norm(h)
+        logits = self.compute_output(h).astype(jnp.float32)
+        return logits, cache_k, cache_v, jnp.array(all_states)
 
 
 def deer(x, layers, states_guess, num_iters, k=1):
@@ -593,6 +605,90 @@ def save_to_pickle(data, filename):
         pickle.dump(data, f)
 
 
+def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True):
+    cos_freq, sin_freq = precompute_frequencies(head_dim, 128000)
+    parallel_model = jax.vmap(
+            model.parallel_call, in_axes=(0, None, None, None, None, 0, 0)
+        ) 
+    sequential_model = jax.vmap(
+            model, in_axes=(0, None, None, None, None, 0, 0)
+        )
+    # 1. Encode the prompts
+    prompts = ["This is another test"]
+    encoded_prompts = [
+        tokenizer.encode(prompt) for prompt in prompts
+    ]  # a list of lists
+    # pdb.set_trace()
+    # print(encoded_prompts)
+    encoded_prompts[0] = encoded_prompts[0][1:]
+    prompt_lens = [len(x) for x in encoded_prompts]
+    min_prompt_len = min(prompt_lens)
+    max_prompt_len = max(prompt_lens)
+
+    # 2. Using numpy to generate the desired input. Will replace it with something
+    # better later on
+    input_tokens = np.full(
+        (len(prompts), max_prompt_len), tokenizer.pad_id, dtype=np.int32
+    )
+    for i, encoded in enumerate(encoded_prompts):
+        input_tokens[i, : len(encoded)] = jnp.array((encoded))
+    input_mask = input_tokens != tokenizer.pad_id
+    cur_pos = min_prompt_len
+
+    # 3. pre-fill
+    positions = jnp.arange(0, min_prompt_len)
+    start = time.time()
+    logits, cache_k, cache_v, _ = sequential_model(
+        jnp.asarray(input_tokens[:, :min_prompt_len]),
+        cos_freq[positions],
+        sin_freq[positions],
+        positions,
+        None,
+        cache_k,
+        cache_v,
+    )
+    print(f"Time taken to prefill: {time.time()- start :.2f} seconds")
+    logprobs = jax.nn.log_softmax(logits, axis=-1)
+    next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
+
+    # 4. Generation
+    generated = [next_token[0].item()]
+    print("Generating...")
+    start = time.time()
+    for _ in range(max_tokens):
+        cur_pos += 1
+        pos = jnp.array([cur_pos])
+        if parallel:
+            logits, cache_k, cache_v, _ = parallel_model(
+                jnp.asarray(next_token[:, None]),
+                cos_freq[pos],
+                sin_freq[pos],
+                pos,
+                None,
+                cache_k,
+                cache_v,
+            )
+        else:
+            logits, cache_k, cache_v, _ = sequential_model(
+                jnp.asarray(next_token[:, None]),
+                cos_freq[pos],
+                sin_freq[pos],
+                pos,
+                None,
+                cache_k,
+                cache_v,
+            )
+        logprobs = jax.nn.log_softmax(logits, axis=-1)
+        next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
+        generated.append(next_token[0].item())
+
+    end = time.time()
+    res = prompts[0] + " " + "".join(tokenizer.decode(generated))
+    print(res, "\n")
+    print(f"Time taken to generate {max_tokens} tokens: {end- start :.2f} seconds")
+    return res
+
+
 if __name__ == "__main__":
 
     import os
@@ -639,7 +735,7 @@ if __name__ == "__main__":
 
     if args.proto:
         args.load_weights = False
-        args.num_iters = 10
+        args.num_iters = 2
 
     if args.xavier:
         wandb.init(project="parallel_transformer", entity="xavier_gonzalez")
@@ -660,73 +756,17 @@ if __name__ == "__main__":
     model = Transformer(
         model_args, key=jax.random.PRNGKey(1), dtype=jnp.float32
     )  # sets architecutre
+
+    cache_k = jnp.zeros((model_args.max_batch_size, model_args.n_layers, model_args.sliding_window, model_args.n_kv_heads, model_args.head_dim), dtype=jnp.float32)
+    cache_v = jnp.zeros((model_args.max_batch_size, model_args.n_layers, model_args.sliding_window, model_args.n_kv_heads, model_args.head_dim), dtype=jnp.float32)
     if(args.load_weights):
         state_dict = torch.load(
             "../model_files/consolidated.00.pth"
         )
         model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
-    cos_freq, sin_freq = precompute_frequencies(model_args.head_dim, 128000)
-    vmap_par = jax.vmap(
-        partial(model.parallel_call, num_iters=args.num_iters),
-        in_axes=(0, None, None, None, None),
-    )  
-    vmap_seq = jax.vmap(
-        model,
-        in_axes=(0, None, None, None, None),
-    )
 
-    # # hardcoded easy example (only a start token)
-    # fake_pos = jnp.array([0], dtype=jnp.int32)
-    # fake_inp = jnp.asarray([[1]], dtype=jnp.int32)
 
-    # hardcoded easy example ("maple'")
-    fake_pos = jnp.array([0,1,2], dtype=jnp.int32)
-    fake_inp = jnp.asarray([[1, 22204, 9011]], dtype=jnp.int32)
+    tokenizer = Tokenizer("../model_files/tokenizer.model")
+    
 
-    fake_mask = None
-
-    hist_seq = vmap_seq(
-        fake_inp, cos_freq[fake_pos], sin_freq[fake_pos], fake_pos, fake_mask
-    )
-    hist_parr = vmap_par(
-        fake_inp, cos_freq[fake_pos], sin_freq[fake_pos], fake_pos, fake_mask
-    )
-
-    results_dict = {
-        "hist_seq": hist_seq,    # (B, num_layers, T, D)
-        "hist_parr": hist_parr,  # (B, num_iters, num_layers, T, D) 
-    }
-    file_name = f"results_num_iters_{args.num_iters}"
-    artifact = wandb.Artifact(file_name, type="dataset")
-    save_to_pickle(results_dict, f"{file_name}.pkl")
-    artifact.add_file(f"{file_name}.pkl")
-    wandb.log_artifact(artifact)
-
-    # make plots
-    errors_per_iter_and_layer = jnp.mean(
-        jnp.abs((hist_parr - hist_seq[:, jnp.newaxis])), axis=(0,-2,-1)
-    )
-
-    # error plot
-    fig, ax = plt.subplots()
-    ax.plot(errors_per_iter_and_layer[-1])
-
-    # Add labels, log scale, and legend
-    ax.set_xlabel("layers")
-    ax.set_ylabel("mean error in activations")
-    ax.set_yscale("log")
-    ax.legend()
-    # log to wandb
-    wandb.log({"error_plot": wandb.Image(fig)})
-    plt.close(fig)
-
-    # heat map over all the iterations
-    fig, ax = plt.subplots()
-    # Plot the heatmap
-    im = ax.imshow(jnp.array(errors_per_iter_and_layer, dtype=jnp.float32), cmap="hot", norm=mcolors.LogNorm(), interpolation="nearest")
-    # Add a colorbar
-    cbar = fig.colorbar(im, ax=ax)
-    wandb.log({"heatmap": wandb.Image(fig)})
-    plt.close(fig)
-
-    wandb.finish()
+    res = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=5)
