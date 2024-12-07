@@ -630,7 +630,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--proto", action="store_true", help="use prototype parameters")
-    parser.add_argument("--num_iters", type=int, default=7, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
+    parser.add_argument("--num_iters", type=int, default=8, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
