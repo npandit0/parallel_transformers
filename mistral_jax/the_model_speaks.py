@@ -786,7 +786,7 @@ if __name__ == "__main__":
 
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
-    # seq generation
+    #seq generation
     res_seq, gen_seq, seq_logits, seq_finals = generate(
         model,
         tokenizer,
