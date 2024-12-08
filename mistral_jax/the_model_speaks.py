@@ -629,7 +629,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     ]  # a list of lists
     # pdb.set_trace()
     # print(encoded_prompts)
-    encoded_prompts[0] = encoded_prompts[0][1:]
+    # encoded_prompts[0] = encoded_prompts[0][1:]
     prompt_lens = [len(x) for x in encoded_prompts]
     min_prompt_len = min(prompt_lens)
     max_prompt_len = max(prompt_lens)
