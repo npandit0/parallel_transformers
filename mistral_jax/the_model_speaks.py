@@ -419,7 +419,7 @@ class Transformer(eqx.Module):
 
         return [
             lambda state : partial_layer(layer,i)(state)[0] for i,layer in enumerate(layers)
-        ]  # really would prefer not to use list comprehension
+        ] 
 
     def parallel_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v, num_iters=7):
         """
@@ -616,7 +616,7 @@ def save_to_pickle(data, filename):
         pickle.dump(data, f)
 
 
-def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True, num_iters=2):
+def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True, num_iters=2, prefill=True):
     cos_freq, sin_freq = precompute_frequencies(head_dim, 128000)
     parallel_model = jax.vmap(
             model.parallel_call, in_axes=(0, None, None, None, None, 0, 0, None)
@@ -625,45 +625,48 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
             model, in_axes=(0, None, None, None, None, 0, 0)
         )
     # 1. Encode the prompts
-    prompts = ["This is another test"]
-    encoded_prompts = [
-        tokenizer.encode(prompt) for prompt in prompts
-    ]  # a list of lists
-    # pdb.set_trace()
-    # print(encoded_prompts)
-    # encoded_prompts[0] = encoded_prompts[0][1:]
-    prompt_lens = [len(x) for x in encoded_prompts]
-    min_prompt_len = min(prompt_lens)
-    max_prompt_len = max(prompt_lens)
+    if prefill:
+        prompts = ["This is another test"]
+        encoded_prompts = [
+            tokenizer.encode(prompt) for prompt in prompts
+        ]  # a list of lists
+        prompt_lens = [len(x) for x in encoded_prompts]
+        min_prompt_len = min(prompt_lens)
+        max_prompt_len = max(prompt_lens)
 
-    # 2. Using numpy to generate the desired input. Will replace it with something
-    # better later on
-    input_tokens = np.full(
-        (len(prompts), max_prompt_len), tokenizer.pad_id, dtype=np.int32
-    )
-    for i, encoded in enumerate(encoded_prompts):
-        input_tokens[i, : len(encoded)] = jnp.array((encoded))
-    input_mask = input_tokens != tokenizer.pad_id
-    cur_pos = min_prompt_len
+        # 2. Using numpy to generate the desired input. Will replace it with something
+        # better later on
+        input_tokens = np.full(
+            (len(prompts), max_prompt_len), tokenizer.pad_id, dtype=np.int32
+        )
+        for i, encoded in enumerate(encoded_prompts):
+            input_tokens[i, : len(encoded)] = jnp.array((encoded))
+        input_mask = input_tokens != tokenizer.pad_id
+        cur_pos = min_prompt_len
 
-    # 3. pre-fill
-    positions = jnp.arange(0, min_prompt_len)
-    start = time.time()
-    logits, cache_k, cache_v, _ = sequential_model(
-        jnp.asarray(input_tokens[:, :min_prompt_len]),
-        cos_freq[positions],
-        sin_freq[positions],
-        positions,
-        None,
-        cache_k,
-        cache_v,
-    )
-    print(f"Time taken to prefill: {time.time()- start :.2f} seconds")
-    logprobs = jax.nn.log_softmax(logits, axis=-1)
-    next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
+        # 3. pre-fill
+        positions = jnp.arange(0, min_prompt_len)
+        start = time.time()
+        logits, cache_k, cache_v, _ = sequential_model(
+            jnp.asarray(input_tokens[:, :min_prompt_len]),
+            cos_freq[positions],
+            sin_freq[positions],
+            positions,
+            None,
+            cache_k,
+            cache_v,
+        )
+        print(f"Time taken to prefill: {time.time()- start :.2f} seconds")
+        logprobs = jax.nn.log_softmax(logits, axis=-1)
+        next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
 
-    # 4. Generation
-    generated = [next_token[0].item()]
+        # 4. Generation
+        generated = [next_token[0].item()]
+    else:
+        prompts = [" "]
+        generated = []
+        cur_pos = -1
+        next_token = jnp.asarray([1], dtype=jnp.int32)
     print("Generating...")
     all_logits = []
     final_layers = []
@@ -784,17 +787,17 @@ if __name__ == "__main__":
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
     # seq generation
-    # res_seq, gen_seq, seq_logits, seq_finals = generate(
-    #     model,
-    #     tokenizer,
-    #     cache_k,
-    #     cache_v,
-    #     model_args.head_dim,
-    #     max_tokens=args.num_tokens,
-    #     parallel=False,
-    # )
-    # print(f"the output of sequential is : {res_seq}")
-    # print(f"the generated tokens from sequential is : {gen_seq}")
+    res_seq, gen_seq, seq_logits, seq_finals = generate(
+        model,
+        tokenizer,
+        cache_k,
+        cache_v,
+        model_args.head_dim,
+        max_tokens=args.num_tokens,
+        parallel=False,
+    )
+    print(f"the output of sequential is : {res_seq}")
+    print(f"the generated tokens from sequential is : {gen_seq}")
     #pdb.set_trace()
 
     # parr generation
