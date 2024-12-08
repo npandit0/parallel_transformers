@@ -401,8 +401,10 @@ class Transformer(eqx.Module):
 
     def partial_layers(self, layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         """
+        cache_k: shape (L, sliding_window, num_heads, head_dim)
         Ideally we could use jtu instead...
         """
+        x=1
 
         def partial_layer(layer, index):
             return partial(
@@ -411,8 +413,8 @@ class Transformer(eqx.Module):
                 sin_freq=sin_freq,
                 positions=positions,
                 mask=mask,
-                cache_k=cache_k[:,index], 
-                cache_v=cache_v[:,index]
+                cache_k=cache_k[index], 
+                cache_v=cache_v[index]
             )
 
         return [
@@ -782,17 +784,17 @@ if __name__ == "__main__":
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
     # seq generation
-    res_seq, gen_seq, seq_logits, seq_finals = generate(
-        model,
-        tokenizer,
-        cache_k,
-        cache_v,
-        model_args.head_dim,
-        max_tokens=args.num_tokens,
-        parallel=False,
-    )
-    print(f"the output of sequential is : {res_seq}")
-    print(f"the generated tokens from sequential is : {gen_seq}")
+    # res_seq, gen_seq, seq_logits, seq_finals = generate(
+    #     model,
+    #     tokenizer,
+    #     cache_k,
+    #     cache_v,
+    #     model_args.head_dim,
+    #     max_tokens=args.num_tokens,
+    #     parallel=False,
+    # )
+    # print(f"the output of sequential is : {res_seq}")
+    # print(f"the generated tokens from sequential is : {gen_seq}")
     #pdb.set_trace()
 
     # parr generation
