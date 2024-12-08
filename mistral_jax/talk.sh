@@ -7,4 +7,4 @@
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mail-type=ALL
 
-$SCRATCH/parallel_transformers/venvs/mistral_jax/bin/python the_model_speaks.py $@ --load_weights
+$SCRATCH/parallel_transformers/venvs/mistral_jax/bin/python the_model_speaks.py $@

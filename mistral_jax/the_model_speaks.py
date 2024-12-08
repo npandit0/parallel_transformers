@@ -515,7 +515,7 @@ def deer(x, layers, states_guess, num_iters, k=1):
             )  # this line seems to be the bottleneck, but that's odd bc we'd expect someone to take this grads during backprop
         )  # (num_layers, T, D, T, D) tensors
         print(f"As shape is {As.shape}")
-        As = As.at[0:iter_num].set(jnp.zeros((iter_num, T, D, T, D)))
+        As = As.at[0:iter_num].set(jnp.zeros((iter_num, T, D, T, D))) # hard code reset
         # pdb.set_trace()
         # need to make the first A equal to zero
         states = jnp.array(states)  # (num_layers, T,D)
@@ -663,12 +663,14 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     # 4. Generation
     generated = [next_token[0].item()]
     print("Generating...")
+    all_logits = []
+    final_layers = []
     start = time.time()
     for _ in range(max_tokens):
         cur_pos += 1
         pos = jnp.array([cur_pos])
         if parallel:
-            logits, cache_k, cache_v, _ = parallel_model(
+            logits, cache_k, cache_v, all_layers = parallel_model(
                 jnp.asarray(next_token[:, None]),
                 cos_freq[pos],
                 sin_freq[pos],
@@ -679,7 +681,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
                 num_iters
             )
         else:
-            logits, cache_k, cache_v, _ = sequential_model(
+            logits, cache_k, cache_v, all_layers = sequential_model(
                 jnp.asarray(next_token[:, None]),
                 cos_freq[pos],
                 sin_freq[pos],
@@ -688,6 +690,9 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
                 cache_k,
                 cache_v,
             )
+        all_logits.append(logits)
+        # pdb.set_trace()
+        final_layers.append(all_layers[0]) # all_layers[0] is an array with shape (L, T, D)
         logprobs = jax.nn.log_softmax(logits, axis=-1)
         next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
         generated.append(next_token[0].item())
@@ -696,7 +701,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     res = prompts[0] + " " + "".join(tokenizer.decode(generated))
     print(res, "\n")
     print(f"Time taken to generate {max_tokens} tokens: {end- start :.2f} seconds")
-    return res
+    return res, generated, all_logits, final_layers
 
 
 if __name__ == "__main__":
@@ -736,18 +741,19 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--proto", action="store_true", help="use prototype parameters")
-    parser.add_argument("--num_iters", type=int, default=8, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
+    parser.add_argument("--num_iters", type=int, default=32, help="number of deer iterations. num_iters needs to be greater than 1 for plotting code to work")
+    parser.add_argument("--num_tokens", type=int, default=2, help="number of tokens to generate")
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
-    parser.add_argument(
-        "--parallel", action="store_true", help="generate in parallel"
-    )
+    # parser.add_argument(
+    #     "--parallel", action="store_true", help="generate in parallel"
+    # )
     args = parser.parse_args()
 
     if args.proto:
         args.load_weights = False
-        args.num_iters = 2
+        args.num_iters = 8
 
     wandb.init(project="parallel_transformer")
 
@@ -775,4 +781,42 @@ if __name__ == "__main__":
 
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
-    res = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=5, parallel=args.parallel, num_iters=args.num_iters)
+    # seq generation
+    res_seq, gen_seq, seq_logits, seq_finals = generate(
+        model,
+        tokenizer,
+        cache_k,
+        cache_v,
+        model_args.head_dim,
+        max_tokens=args.num_tokens,
+        parallel=False,
+    )
+    print(f"the output of sequential is : {res_seq}")
+    print(f"the generated tokens from sequential is : {gen_seq}")
+    #pdb.set_trace()
+
+    # parr generation
+    res_parr, gen_parr, parr_logits, parr_finals = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=args.num_tokens, parallel=True, num_iters=args.num_iters)
+    print(f"the output of parallel is : {res_parr}")
+    print(f"the genrated tokens from parallel is : {gen_parr}")
+    # pdb.set_trace()
+
+    for i in range(len(seq_logits)):
+        plt.plot(seq_logits[i][0,0] - parr_logits[i][0,0])
+        plt.xlabel("token id")    
+        plt.ylabel("logit difference (seq - parr)")
+        plt.title(f"Logit difference between sequential and parallel at token {i}")
+        plt.show()
+        plt.savefig(f"logit_diff_{i}.png")
+
+    for i in range(len(seq_finals)):
+        plt.plot(jnp.mean(seq_finals[i][-1,0] - parr_finals[i][-1,0]))
+        plt.xlabel("token id")    
+        plt.ylabel("Mean difference in final layer (seq - parr)")
+        plt.title(f"Mean difference in final layer between sequential and parallel at token {i}")
+        plt.show()
+        plt.savefig(f"layer_diff_{i}.png")
+
+
+
+    pdb.set_trace()
