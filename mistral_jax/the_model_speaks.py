@@ -151,13 +151,14 @@ class Attention(eqx.Module):
     kv_repeats: int
     sliding_window: int
     scale: float
-    split_sizes: Tuple
-    wqkv: eqx.nn.Linear
+    wq: eqx.nn.Linear
+    wk: eqx.nn.Linear
+    wv: eqx.nn.Linear
     wo: eqx.nn.Linear
 
     def __init__(self, args, key, dtype=jnp.bfloat16):
-        dtype = default_floating_dtype() if dtype is None else dtype
-        key1, key2 = jax.random.split(key, 2)
+        dtype = default_floating_dtype if dtype is None else dtype
+        key1, key2, key3, key4 = jax.random.split(key, 4)
 
         self.n_heads = args.n_heads
         self.head_dim = args.head_dim
@@ -165,33 +166,77 @@ class Attention(eqx.Module):
         self.dim = args.dim
         self.kv_repeats = self.n_heads // self.n_kv_heads
         self.sliding_window = args.sliding_window
-        self.scale = args.head_dim**-0.5
-        total_head_dim = (args.n_heads + 2 * args.n_kv_heads) * args.head_dim
-        self.split_sizes = (
-            args.n_heads * args.head_dim,
-            (args.n_heads * args.head_dim) + (args.n_kv_heads * args.head_dim),
-        )
 
-        self.wqkv = eqx.nn.Linear(
-            args.dim, total_head_dim, use_bias=False, key=key1, dtype=dtype
+        self.scale = args.head_dim**-0.5
+
+        self.wq = eqx.nn.Linear(
+            args.dim,
+            args.n_heads * args.head_dim,
+            use_bias=False,
+            key=key1,
+            dtype=dtype,
+        )
+        self.wk = eqx.nn.Linear(
+            args.dim,
+            args.n_kv_heads * args.head_dim,
+            use_bias=False,
+            key=key2,
+            dtype=dtype,
+        )
+        self.wv = eqx.nn.Linear(
+            args.dim,
+            args.n_kv_heads * args.head_dim,
+            use_bias=False,
+            key=key3,
+            dtype=dtype,
         )
         self.wo = eqx.nn.Linear(
             args.n_heads * args.head_dim,
             args.dim,
             use_bias=False,
-            key=key2,
+            key=key4,
             dtype=dtype,
         )
 
-    def compute_scores_and_output(self, xq, key, value, mask, seqlen, pos_mask):
+    @partial(jax.jit, static_argnums=(2, 3))
+    def get_cache_slice(self, x, pos, kv_repeats):
+        x_slice = x.at[:pos, :, :].get()
+        x_slice = jnp.repeat(x_slice, kv_repeats, axis=1)
+        return x_slice
+
+    @eqx.filter_jit
+    def compute_qkv(self, x):
+        seqlen, _ = x.shape
+
+        xq = jax.vmap(self.wq)(x)
+        xk = jax.vmap(self.wk)(x)
+        xv = jax.vmap(self.wv)(x)
+
+        xq = jnp.reshape(xq, (seqlen, self.n_heads, self.head_dim))
+        xk = jnp.reshape(xk, (seqlen, self.n_kv_heads, self.head_dim))
+        xv = jnp.reshape(xv, (seqlen, self.n_kv_heads, self.head_dim))
+        return xq, xk, xv
+
+    @jax.jit
+    def update_cache_values(self, xk, xv, cache_k, cache_v, positions):
+        cache_k = cache_k.at[positions, ...].set(xk[positions, ...])
+        cache_v = cache_v.at[positions, ...].set(xv[positions, ...])
+        return cache_k, cache_v
+
+    @eqx.filter_jit
+    def prefill(self, xk, xv):
+        key = jnp.repeat(xk, self.kv_repeats, axis=1)
+        value = jnp.repeat(xv, self.kv_repeats, axis=1)
+        return key, value
+
+    @eqx.filter_jit
+    def compute_scores_and_output(self, xq, key, value, mask, seqlen):
         query = jnp.transpose(xq, (1, 0, 2))
         key = jnp.transpose(key, (1, 0, 2))
         value = jnp.transpose(value, (1, 0, 2))
 
         # # # scores : [n_heads, seqlen | 1, seqlen]
         scores = jnp.matmul(query, jnp.transpose(key, (0, 2, 1))) * self.scale
-        if pos_mask is not None:
-            scores = jnp.where(pos_mask, -jnp.inf, scores)
 
         if mask is not None:
             # Mask will of shape [seqlen, seqlen] but our scores
@@ -210,69 +255,30 @@ class Attention(eqx.Module):
         self, x, cos_freq, sin_freq, positions, mask=None, cache_k=None, cache_v=None
     ):
         # x shape: [seqlen, embed_dim]
-        seqlen = x.shape[0]
+        seqlen, _ = x.shape
+        # 1. Calculate qkv
+        xq, xk, xv = self.compute_qkv(x)
 
-        xqkv = jax.vmap(self.wqkv)(x)
-        xq, xk, xv = jnp.split(xqkv, self.split_sizes, axis=-1)
+        # 2. Calculate RoPE
+        xq = calculate_rope(xq, cos_freq, sin_freq, 0)
+        xk = calculate_rope(xk, cos_freq, sin_freq, 0)
 
-        xq = jnp.reshape(xq, (seqlen, self.n_heads, self.head_dim))
-        xk = jnp.reshape(xk, (seqlen, self.n_kv_heads, self.head_dim))
-        xv = jnp.reshape(xv, (seqlen, self.n_kv_heads, self.head_dim))
+        # 3. Update cache
+        # pdb.set_trace()
+        cache_k, cache_v = self.update_cache_values(xk, xv, cache_k, cache_v, positions)
 
-        xq = calculate_rope(xq, cos_freq, sin_freq)
-        xk = calculate_rope(xk, cos_freq, sin_freq)
-
+        # 4. Generation
         if positions.shape[0] > 1:
             # prefill
-            cache_k = cache_k.at[positions, :, :].set(xk[positions, :, :], mode="drop")
-            cache_v = cache_v.at[positions, :, :].set(xv[positions, :, :], mode="drop")
-
-            key = jnp.repeat(xk, self.kv_repeats, axis=1)
-            value = jnp.repeat(xv, self.kv_repeats, axis=1)
-            output = self.compute_scores_and_output(xq, key, value, mask, seqlen, None)
+            key, value = self.prefill(xk, xv)
         else:
             # single-token generation
-            one_hot_indices = jax.nn.one_hot(
-                positions, self.sliding_window, dtype=cache_k.dtype
-            ).reshape(self.sliding_window, 1, 1)
-            # Ideally, we expect that you flush out the cache with the new prompt,
-            # and start over. Why flushing out the cache values are necessary?
-            # It ensures that we are not adding any values updated earlier with the
-            # new updates, meaning we are always replacing the value not updating it.
-            # For example, if prompt had a length of 6, and you want to generate 7th
-            # token, this ensures that we are not adding the old value of 7th token
-            # to the updated value as it would lead to wrong results.
-            # In case, you are not flushing the cache after every prompt, add the
-            # `jnp.where()` condition as shown below:
-            # k_updates = cache_k + xk * one_hot_indices
-            # v_updates = cache_v + xv * one_hot_indices
-            # cache_k = jnp.where(cache_k, cache_k, k_updates)
-            # cache_v = jnp.where(cache_v, cache_v, v_updates)
-            # pdb.set_trace()
-            cache_k = cache_k + xk * one_hot_indices
-            cache_k = cache_v + xv * one_hot_indices
+            cur_pos = positions[-1].item() + 1
+            key = self.get_cache_slice(cache_k, cur_pos, self.kv_repeats)
+            value = self.get_cache_slice(cache_v, cur_pos, self.kv_repeats)
 
-            cur_pos = positions[-1] + 1
-            causal_mask = jnp.broadcast_to(
-                jnp.arange(self.sliding_window) >= cur_pos, (1, 1, self.sliding_window)
-            ).reshape(self.sliding_window, 1, 1)
-
-            key = jnp.repeat(
-                jnp.where(causal_mask, 0, cache_k), axis=1, repeats=self.kv_repeats
-            )
-            value = jnp.repeat(
-                jnp.where(causal_mask, 0, cache_v), axis=1, repeats=self.kv_repeats
-            )
-
-            output = self.compute_scores_and_output(
-                xq,
-                key,
-                value,
-                mask,
-                seqlen,
-                causal_mask.reshape((1, 1, self.sliding_window)),
-            )
-
+        # 5. Output
+        output = self.compute_scores_and_output(xq, key, value, mask, seqlen)
         return output, cache_k, cache_v
 
 
@@ -405,8 +411,8 @@ class Transformer(eqx.Module):
                 sin_freq=sin_freq,
                 positions=positions,
                 mask=mask,
-                cache_k=cache_k[0,index], # Need to index in the depth dimension
-                cache_v=cache_v[0,index]
+                cache_k=cache_k[:,index], 
+                cache_v=cache_v[:,index]
             )
 
         return [
@@ -446,7 +452,8 @@ class Transformer(eqx.Module):
         for i, layer in enumerate(self.layers):
             _, cache_ki, cache_vi = layer(
                 all_states[-1, i], cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
-            )  
+            )
+            # pdb.set_trace()
             cache_k, cache_v = self.update_cache_values(
                 i, cache_k, cache_v, cache_ki, cache_vi
             )  
@@ -589,6 +596,7 @@ def port_weights_from_torch(torch_weights, eqx_model):
         path_pieces = ".".join(path_pieces)
 
         if "weight" in path_pieces:
+            # print(path_pieces)
             weight = torch_weights[path_pieces]
             weight = jnp.asarray(weight.float().numpy(), dtype=jnp.float32)
             assert weight.shape == leaf.shape
@@ -735,17 +743,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parallel", action="store_true", help="generate in parallel"
     )
-    parser.add_argument("--xavier", action="store_true", help="wandb login for xavier")
     args = parser.parse_args()
 
     if args.proto:
         args.load_weights = False
         args.num_iters = 2
 
-    if args.xavier:
-        wandb.init(project="parallel_transformer", entity="xavier_gonzalez")
-    else:
-        wandb.init(project="parallel_transformer")
+    wandb.init(project="parallel_transformer")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -760,15 +764,14 @@ if __name__ == "__main__":
 
     model = Transformer(
         model_args, key=jax.random.PRNGKey(1), dtype=jnp.float32
-    )  # sets architecutre
+    )  # sets architecture
+    # pdb.set_trace()
+    if args.load_weights:
+        state_dict = torch.load("../model_files/consolidated.00.pth")
+        model = port_weights_from_torch(state_dict, model)
 
     cache_k = jnp.zeros((model_args.max_batch_size, model_args.n_layers, model_args.sliding_window, model_args.n_kv_heads, model_args.head_dim), dtype=jnp.float32)
     cache_v = jnp.zeros((model_args.max_batch_size, model_args.n_layers, model_args.sliding_window, model_args.n_kv_heads, model_args.head_dim), dtype=jnp.float32)
-    if(args.load_weights):
-        state_dict = torch.load(
-            "../model_files/consolidated.00.pth"
-        )
-        model = port_weights_from_torch(state_dict, model)  # fills with pretrained weights
 
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 

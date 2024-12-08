@@ -582,6 +582,7 @@ def port_weights_from_torch(torch_weights, eqx_model):
         path_pieces = ".".join(path_pieces)
 
         if "weight" in path_pieces:
+            print(path_pieces)
             weight = torch_weights[path_pieces]
             weight = jnp.asarray(weight.float().numpy(), dtype=jnp.float32)
             assert weight.shape == leaf.shape
@@ -640,17 +641,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load_weights", action="store_true", help="Pre-load model weights"
     )
-    parser.add_argument("--xavier", action="store_true", help="wandb login for xavier")
     args = parser.parse_args()
 
     if args.proto:
         args.load_weights = False
         args.num_iters = 10
 
-    if args.xavier:
-        wandb.init(project="parallel_transformer", entity="xavier_gonzalez")
-    else:
-        wandb.init(project="parallel_transformer")
+    wandb.init(project="parallel_transformer")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
