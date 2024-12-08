@@ -783,18 +783,18 @@ if __name__ == "__main__":
 
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
-    # seq generation
-    # res_seq, gen_seq, seq_logits, seq_finals = generate(
-    #     model,
-    #     tokenizer,
-    #     cache_k,
-    #     cache_v,
-    #     model_args.head_dim,
-    #     max_tokens=args.num_tokens,
-    #     parallel=False,
-    # )
-    # print(f"the output of sequential is : {res_seq}")
-    # print(f"the generated tokens from sequential is : {gen_seq}")
+    #seq generation
+    res_seq, gen_seq, seq_logits, seq_finals = generate(
+        model,
+        tokenizer,
+        cache_k,
+        cache_v,
+        model_args.head_dim,
+        max_tokens=args.num_tokens,
+        parallel=False,
+    )
+    print(f"the output of sequential is : {res_seq}")
+    print(f"the generated tokens from sequential is : {gen_seq}")
     #pdb.set_trace()
 
     # parr generation
