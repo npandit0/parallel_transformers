@@ -431,12 +431,12 @@ class Transformer(eqx.Module):
         # loop through all_states to the kv cache
         for i, layer in enumerate(self.layers):
             _, cache_ki, cache_vi = layer(
-                all_states[i],
-                cos_freq,
+                all_states[i], # (T,D)
+                cos_freq, # (1,?)
                 sin_freq,
                 positions,
                 mask,
-                cache_k[i, ...],
+                cache_k[i, ...], # (sliding_window, num_heads, head_dim)
                 cache_v[i, ...],
             )
             # pdb.set_trace()
