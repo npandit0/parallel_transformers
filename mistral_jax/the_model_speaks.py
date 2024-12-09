@@ -302,12 +302,14 @@ class TransformerBlock(eqx.Module):
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, dtype=dtype)
 
     def __call__(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
+        # pdb.set_trace()
         normed_x = jax.vmap(self.attention_norm)(x)
         r, cache_k, cache_v = self.attention(
             normed_x, cos_freq, sin_freq, positions, mask, cache_k, cache_v
         )
         h = x + r
         r = jax.vmap(self.feed_forward)(jax.vmap(self.ffn_norm)(h))
+        # pdb.set_trace()
         out = h + r
         return out, cache_k, cache_v
 
@@ -454,7 +456,7 @@ class Transformer(eqx.Module):
         Ideally we could use jtu instead...
         """
         def partial_layer(layer, index):
-            return partial(
+            return lambda state : partial(
                 layer.__call__,
                 cos_freq=cos_freq,
                 sin_freq=sin_freq,
@@ -462,11 +464,12 @@ class Transformer(eqx.Module):
                 mask=mask,
                 cache_k=cache_k[index], 
                 cache_v=cache_v[index]
-            )
+            )(state)[0]
 
-        return [
-            lambda state : partial_layer(layer,i)(state)[0] for i,layer in enumerate(layers)
-        ] 
+        return [partial_layer(layer, i) for i, layer in enumerate(layers)]
+        # return [
+        #     lambda state : partial_layer(layer,i)(state)[0] for i,layer in enumerate(layers)
+        # ] # evil bug!!! lambda uses reference!
 
     def parallel_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v, num_iters=7):
         """
@@ -723,36 +726,27 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     for _ in range(max_tokens):
         cur_pos += 1
         pos = jnp.array([cur_pos])
-        # if parallel:
-        #     logits, cache_k, cache_v, all_layers = parallel_model(
-        #         jnp.asarray(next_token[:, None]),
-        #         cos_freq[pos],
-        #         sin_freq[pos],
-        #         pos,
-        #         None,
-        #         cache_k,
-        #         cache_v,
-        #         num_iters
-        #     )
-        logits, cache_k, cache_v, all_layers = sequential_model(
-            jnp.asarray(next_token[:, None]),
-            cos_freq[pos],
-            sin_freq[pos],
-            pos,
-            None,
-            cache_k,
-            cache_v,
-        )
-
-        logits_t, cache_k_t, cache_v_t, all_layers_t = sequential_test_model(
-            jnp.asarray(next_token[:, None]),
-            cos_freq[pos],
-            sin_freq[pos],
-            pos,
-            None,
-            cache_k,
-            cache_v,
-        )
+        if parallel:
+            logits, cache_k, cache_v, all_layers = parallel_model(
+                jnp.asarray(next_token[:, None]),
+                cos_freq[pos],
+                sin_freq[pos],
+                pos,
+                None,
+                cache_k,
+                cache_v,
+                num_iters
+            )
+        else:
+            logits, cache_k, cache_v, all_layers = sequential_model(
+                jnp.asarray(next_token[:, None]),
+                cos_freq[pos],
+                sin_freq[pos],
+                pos,
+                None,
+                cache_k,
+                cache_v,
+            )
         all_logits.append(logits)
         # pdb.set_trace()
         final_layers.append(all_layers[0]) # all_layers[0] is an array with shape (L, T, D)
@@ -834,7 +828,6 @@ if __name__ == "__main__":
     model = Transformer(
         model_args, key=jax.random.PRNGKey(1), dtype=jnp.float32
     )  # sets architecture
-    # pdb.set_trace()
     if args.load_weights:
         state_dict = torch.load("../model_files/consolidated.00.pth")
         model = port_weights_from_torch(state_dict, model)
@@ -882,4 +875,4 @@ if __name__ == "__main__":
 
 
 
-    pdb.set_trace()
+    # pdb.set_trace()
