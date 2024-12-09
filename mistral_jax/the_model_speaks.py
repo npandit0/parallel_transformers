@@ -399,13 +399,60 @@ class Transformer(eqx.Module):
         h = self.compute_output(h).astype(jnp.float32)
         return h, cache_k, cache_v, jnp.array(all_states)
 
+    def test_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
+        """
+        more or less the same logic as call
+        """
+        h = self.compute_embeddings(x)
+
+        if x.shape[-1] > 1:
+            seqlen = x.shape[-1]
+            mask = self.compute_mask(seqlen)
+        else:
+            mask = None
+
+        all_states = [h]
+        partialed_layers = self.partial_layers(
+            self.layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v
+        )
+        for i, layer in enumerate(partialed_layers):
+            # h has shape (len(positions), dim)
+            # cache_ki has shape (sliding_window_len, head_dim, n_kv_heads)
+            # h, cache_ki, cache_vi = layer(
+            #     h, cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
+            # )  # h has shape (T,D)
+            h = layer(h)
+            # cache_k, cache_v = self.update_cache_values(
+            #     i, cache_k, cache_v, cache_ki, cache_vi
+            # )
+            all_states.append(h)
+            # print(f"at layer {i}, the shape of the feature is {h.shape}")
+
+        # loop through all_states to the kv cache
+        for i, layer in enumerate(self.layers):
+            _, cache_ki, cache_vi = layer(
+                all_states[i],
+                cos_freq,
+                sin_freq,
+                positions,
+                mask,
+                cache_k[i, ...],
+                cache_v[i, ...],
+            )
+            # pdb.set_trace()
+            cache_k, cache_v = self.update_cache_values(
+                i, cache_k, cache_v, cache_ki, cache_vi
+            )
+
+        h = self.compute_norm(h)
+        h = self.compute_output(h).astype(jnp.float32)
+        return h, cache_k, cache_v, jnp.array(all_states)
+
     def partial_layers(self, layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         """
         cache_k: shape (L, sliding_window, num_heads, head_dim)
         Ideally we could use jtu instead...
         """
-        x=1
-
         def partial_layer(layer, index):
             return partial(
                 layer.__call__,
@@ -450,6 +497,7 @@ class Transformer(eqx.Module):
             h0, partialed_layers, states_guess, num_iters
         )  # (num_iters, num_layers, T, D)
 
+        # TODO: concatenate all_states and h0 correctly
         # loop through all_states to the kv cache
         for i, layer in enumerate(self.layers):
             _, cache_ki, cache_vi = layer(
@@ -617,13 +665,14 @@ def save_to_pickle(data, filename):
 
 
 def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parallel=True, num_iters=2, prefill=True):
-    cos_freq, sin_freq = precompute_frequencies(head_dim, 128000)
+    cos_freq, sin_freq = precompute_frequencies(head_dim, 128000) # 128000, 4
     parallel_model = jax.vmap(
             model.parallel_call, in_axes=(0, None, None, None, None, 0, 0, None)
         ) 
     sequential_model = jax.vmap(
             model, in_axes=(0, None, None, None, None, 0, 0)
         )
+    sequential_test_model = jax.vmap(model.test_call, in_axes=(0, None, None, None, None, 0, 0))
     # 1. Encode the prompts
     if prefill:
         prompts = ["This is another test"]
@@ -674,27 +723,36 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     for _ in range(max_tokens):
         cur_pos += 1
         pos = jnp.array([cur_pos])
-        if parallel:
-            logits, cache_k, cache_v, all_layers = parallel_model(
-                jnp.asarray(next_token[:, None]),
-                cos_freq[pos],
-                sin_freq[pos],
-                pos,
-                None,
-                cache_k,
-                cache_v,
-                num_iters
-            )
-        else:
-            logits, cache_k, cache_v, all_layers = sequential_model(
-                jnp.asarray(next_token[:, None]),
-                cos_freq[pos],
-                sin_freq[pos],
-                pos,
-                None,
-                cache_k,
-                cache_v,
-            )
+        # if parallel:
+        #     logits, cache_k, cache_v, all_layers = parallel_model(
+        #         jnp.asarray(next_token[:, None]),
+        #         cos_freq[pos],
+        #         sin_freq[pos],
+        #         pos,
+        #         None,
+        #         cache_k,
+        #         cache_v,
+        #         num_iters
+        #     )
+        logits, cache_k, cache_v, all_layers = sequential_model(
+            jnp.asarray(next_token[:, None]),
+            cos_freq[pos],
+            sin_freq[pos],
+            pos,
+            None,
+            cache_k,
+            cache_v,
+        )
+
+        logits_t, cache_k_t, cache_v_t, all_layers_t = sequential_test_model(
+            jnp.asarray(next_token[:, None]),
+            cos_freq[pos],
+            sin_freq[pos],
+            pos,
+            None,
+            cache_k,
+            cache_v,
+        )
         all_logits.append(logits)
         # pdb.set_trace()
         final_layers.append(all_layers[0]) # all_layers[0] is an array with shape (L, T, D)
