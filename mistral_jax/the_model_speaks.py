@@ -399,56 +399,57 @@ class Transformer(eqx.Module):
 
         h = self.compute_norm(h)
         h = self.compute_output(h).astype(jnp.float32)
-        return h, cache_k, cache_v, jnp.array(all_states)
+        return h, cache_k, cache_v
+        # return h, cache_k, cache_v, jnp.array(all_states)
 
-    def test_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
-        """
-        more or less the same logic as call
-        """
-        h = self.compute_embeddings(x)
+    # def test_call(self, x, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
+    #     """
+    #     more or less the same logic as call
+    #     """
+    #     h = self.compute_embeddings(x)
 
-        if x.shape[-1] > 1:
-            seqlen = x.shape[-1]
-            mask = self.compute_mask(seqlen)
-        else:
-            mask = None
+    #     if x.shape[-1] > 1:
+    #         seqlen = x.shape[-1]
+    #         mask = self.compute_mask(seqlen)
+    #     else:
+    #         mask = None
 
-        all_states = [h]
-        partialed_layers = self.partial_layers(
-            self.layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v
-        )
-        for i, layer in enumerate(partialed_layers):
-            # h has shape (len(positions), dim)
-            # cache_ki has shape (sliding_window_len, head_dim, n_kv_heads)
-            # h, cache_ki, cache_vi = layer(
-            #     h, cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
-            # )  # h has shape (T,D)
-            h = layer(h)
-            # cache_k, cache_v = self.update_cache_values(
-            #     i, cache_k, cache_v, cache_ki, cache_vi
-            # )
-            all_states.append(h)
-            # print(f"at layer {i}, the shape of the feature is {h.shape}")
+    #     all_states = [h]
+    #     partialed_layers = self.partial_layers(
+    #         self.layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v
+    #     )
+    #     for i, layer in enumerate(partialed_layers):
+    #         # h has shape (len(positions), dim)
+    #         # cache_ki has shape (sliding_window_len, head_dim, n_kv_heads)
+    #         # h, cache_ki, cache_vi = layer(
+    #         #     h, cos_freq, sin_freq, positions, mask, cache_k[i, ...], cache_v[i, ...]
+    #         # )  # h has shape (T,D)
+    #         h = layer(h)
+    #         # cache_k, cache_v = self.update_cache_values(
+    #         #     i, cache_k, cache_v, cache_ki, cache_vi
+    #         # )
+    #         all_states.append(h)
+    #         # print(f"at layer {i}, the shape of the feature is {h.shape}")
 
-        # loop through all_states to the kv cache
-        for i, layer in enumerate(self.layers):
-            _, cache_ki, cache_vi = layer(
-                all_states[i], # (T,D)
-                cos_freq, # (1,?)
-                sin_freq,
-                positions,
-                mask,
-                cache_k[i, ...], # (sliding_window, num_heads, head_dim)
-                cache_v[i, ...],
-            )
-            # pdb.set_trace()
-            cache_k, cache_v = self.update_cache_values(
-                i, cache_k, cache_v, cache_ki, cache_vi
-            )
+    #     # loop through all_states to the kv cache
+    #     for i, layer in enumerate(self.layers):
+    #         _, cache_ki, cache_vi = layer(
+    #             all_states[i], # (T,D)
+    #             cos_freq, # (1,?)
+    #             sin_freq,
+    #             positions,
+    #             mask,
+    #             cache_k[i, ...], # (sliding_window, num_heads, head_dim)
+    #             cache_v[i, ...],
+    #         )
+    #         # pdb.set_trace()
+    #         cache_k, cache_v = self.update_cache_values(
+    #             i, cache_k, cache_v, cache_ki, cache_vi
+    #         )
 
-        h = self.compute_norm(h)
-        h = self.compute_output(h).astype(jnp.float32)
-        return h, cache_k, cache_v, jnp.array(all_states)
+    #     h = self.compute_norm(h)
+    #     h = self.compute_output(h).astype(jnp.float32)
+    #     return h, cache_k, cache_v, jnp.array(all_states)
 
     def partial_layers(self, layers, cos_freq, sin_freq, positions, mask, cache_k, cache_v):
         """
@@ -513,7 +514,8 @@ class Transformer(eqx.Module):
         h = all_states[-1][-1]
         h = self.compute_norm(h)
         logits = self.compute_output(h).astype(jnp.float32)
-        return logits, cache_k, cache_v, jnp.array(all_states)
+        return logits, cache_k, cache_v
+        # return logits, cache_k, cache_v, jnp.array(all_states)
 
 
 def deer(x, layers, states_guess, num_iters, k=1):
@@ -675,7 +677,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     sequential_model = jax.vmap(
             model, in_axes=(0, None, None, None, None, 0, 0)
         )
-    sequential_test_model = jax.vmap(model.test_call, in_axes=(0, None, None, None, None, 0, 0))
+    # sequential_test_model = jax.vmap(model.test_call, in_axes=(0, None, None, None, None, 0, 0))
     # 1. Encode the prompts
     if prefill:
         prompts = ["This is another test"]
@@ -699,7 +701,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
         # 3. pre-fill
         positions = jnp.arange(0, min_prompt_len)
         start = time.time()
-        logits, cache_k, cache_v, _ = sequential_model(
+        logits, cache_k, cache_v = sequential_model(
             jnp.asarray(input_tokens[:, :min_prompt_len]),
             cos_freq[positions],
             sin_freq[positions],
@@ -720,14 +722,14 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
         cur_pos = -1
         next_token = jnp.asarray([1], dtype=jnp.int32)
     print("Generating...")
-    all_logits = []
-    final_layers = []
+    # all_logits = []
+    # final_layers = []
     start = time.time()
     for _ in range(max_tokens):
         cur_pos += 1
         pos = jnp.array([cur_pos])
         if parallel:
-            logits, cache_k, cache_v, all_layers = parallel_model(
+            logits, cache_k, cache_v = parallel_model(
                 jnp.asarray(next_token[:, None]),
                 cos_freq[pos],
                 sin_freq[pos],
@@ -738,7 +740,7 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
                 num_iters
             )
         else:
-            logits, cache_k, cache_v, all_layers = sequential_model(
+            logits, cache_k, cache_v = sequential_model(
                 jnp.asarray(next_token[:, None]),
                 cos_freq[pos],
                 sin_freq[pos],
@@ -747,9 +749,9 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
                 cache_k,
                 cache_v,
             )
-        all_logits.append(logits)
+        # all_logits.append(logits)
         # pdb.set_trace()
-        final_layers.append(all_layers[0]) # all_layers[0] is an array with shape (L, T, D)
+        # final_layers.append(all_layers[0]) # all_layers[0] is an array with shape (L, T, D)
         logprobs = jax.nn.log_softmax(logits, axis=-1)
         next_token = jnp.argmax(logprobs[:, -1, :], axis=-1)
         generated.append(next_token[0].item())
@@ -758,7 +760,8 @@ def generate(model, tokenizer, cache_k, cache_v, head_dim, max_tokens=36, parall
     res = prompts[0] + " " + "".join(tokenizer.decode(generated))
     print(res, "\n")
     print(f"Time taken to generate {max_tokens} tokens: {end- start :.2f} seconds")
-    return res, generated, all_logits, final_layers
+    return res
+    # return res, generated, all_logits, final_layers
 
 
 if __name__ == "__main__":
@@ -838,7 +841,7 @@ if __name__ == "__main__":
     tokenizer = Tokenizer("../model_files/tokenizer.model")
 
     #seq generation
-    res_seq, gen_seq, seq_logits, seq_finals = generate(
+    res_seq = generate(
         model,
         tokenizer,
         cache_k,
@@ -848,30 +851,30 @@ if __name__ == "__main__":
         parallel=False,
     )
     print(f"the output of sequential is : {res_seq}")
-    print(f"the generated tokens from sequential is : {gen_seq}")
+    # print(f"the generated tokens from sequential is : {gen_seq}")
     #pdb.set_trace()
 
     # parr generation
-    res_parr, gen_parr, parr_logits, parr_finals = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=args.num_tokens, parallel=True, num_iters=args.num_iters)
+    res_parr = generate(model, tokenizer, cache_k, cache_v, model_args.head_dim, max_tokens=args.num_tokens, parallel=True, num_iters=args.num_iters)
     print(f"the output of parallel is : {res_parr}")
-    print(f"the genrated tokens from parallel is : {gen_parr}")
+    # print(f"the genrated tokens from parallel is : {gen_parr}")
     # pdb.set_trace()
 
-    for i in range(len(seq_logits)):
-        plt.plot(seq_logits[i][0,0] - parr_logits[i][0,0])
-        plt.xlabel("token id")    
-        plt.ylabel("logit difference (seq - parr)")
-        plt.title(f"Logit difference between sequential and parallel at token {i}")
-        plt.show()
-        plt.savefig(f"logit_diff_{i}.png")
+    # for i in range(len(seq_logits)):
+    #     plt.plot(seq_logits[i][0,0] - parr_logits[i][0,0])
+    #     plt.xlabel("token id")    
+    #     plt.ylabel("logit difference (seq - parr)")
+    #     plt.title(f"Logit difference between sequential and parallel at token {i}")
+    #     plt.show()
+    #     plt.savefig(f"logit_diff_{i}.png")
 
-    for i in range(len(seq_finals)):
-        plt.plot(jnp.mean(seq_finals[i][-1,0] - parr_finals[i][-1,0]))
-        plt.xlabel("token id")    
-        plt.ylabel("Mean difference in final layer (seq - parr)")
-        plt.title(f"Mean difference in final layer between sequential and parallel at token {i}")
-        plt.show()
-        plt.savefig(f"layer_diff_{i}.png")
+    # for i in range(len(seq_finals)):
+    #     plt.plot(jnp.mean(seq_finals[i][-1,0] - parr_finals[i][-1,0]))
+    #     plt.xlabel("token id")    
+    #     plt.ylabel("Mean difference in final layer (seq - parr)")
+    #     plt.title(f"Mean difference in final layer between sequential and parallel at token {i}")
+    #     plt.show()
+    #     plt.savefig(f"layer_diff_{i}.png")
 
 
 
