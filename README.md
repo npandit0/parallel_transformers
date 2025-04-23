@@ -1,3 +1,7 @@
+# Parallelizing Transformers over Depth
+
+This is the repo for the [Stanford CS229S (Machine Learning Systems)](https://cs229s.stanford.edu/fall2024/) final project by Xavier Gonzalez and Nikhil Pandit. 
+
 We are building off this pre-trained transformer, with the goal of parallelizing the applicaiton of the transformer layer using fixed point iterations.
 
 
