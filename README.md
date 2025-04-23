@@ -4,6 +4,10 @@ This is the repo for the [Stanford CS229S (Machine Learning Systems)](https://cs
 
 We demonstrate the capabilities of our approach on the pre-trained [Mistral-7B model](https://github.com/mistralai/mistral-src/tree/main?tab=readme-ov-file), [ported to JAX](https://github.com/AakashKumarNain/mistral_jax).
 
+## Relevant Files
+* `deer_prototype_mistral.py`: implements inference with the Tranformer parallelized over depth.
+* `the_model_speaks.py`: implements autoregressive generation (using KV cache) but with the Transformer parallelized over depth.
+
 ## Citation
 
 If you find this work useful, plese consider citing us with
